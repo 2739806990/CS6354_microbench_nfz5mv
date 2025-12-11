@@ -9,8 +9,8 @@
 #include <string.h>
 #include <math.h>
 #include "harness.h"
-#include <sys/syscall.h>   // 新增：使用 syscall(SYS_getpid) 强制走内核
-#include <dispatch/dispatch.h>   // ← 新增：Apple GCD 信号量
+#include <sys/syscall.h>   //
+#include <dispatch/dispatch.h>   // 
 
 // -------- 通用工具：double 的中位数 --------
 static double dmedian(double* a, size_t n){

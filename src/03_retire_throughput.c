@@ -1,16 +1,14 @@
 // 03_retire_throughput.c
-// 实验目的：测试 CPU 在不同指令级并行度 (ILP) 下的实际指令吞吐率
-// 方法：通过多个独立累加器（acc）构造不同并行度的加法操作，测量在相同循环次数下，每周期平均提交（retire）的指令数。
+// 实验目的：测试 CPU 在不同并行度 (ILP) 下的实际指令提交速率 (IPC)
 
 #include <stdio.h>
 #include <stdint.h>
-#include <stdlib.h>
 #include <math.h>
 #include "harness.h"
 
-#define REPEAT 21  // 重复次数，用于统计中位数减少偶然误差
+#define REPEAT 15  // 中位数减少波动
 
-// 计算一组样本的中位数
+// 中位数
 static double median(double *a, size_t n) {
     for (size_t i = 1; i < n; ++i) {
         double key = a[i];
@@ -21,85 +19,81 @@ static double median(double *a, size_t n) {
         }
         a[j] = key;
     }
-    if (n % 2)
-        return a[n / 2];
-    else
-        return 0.5 * (a[n / 2 - 1] + a[n / 2]);
+    return (n % 2) ? a[n / 2] : 0.5 * (a[n/2 - 1] + a[n/2]);
 }
 
-// 测试核心函数：根据设定的 ILP 数量执行循环，计算平均 IPC
-// ilp 表示独立累加器的数量（越大表示并行度越高）
-// 每个累加器在一次循环中执行 8 次加法操作
-static double measure_ilp_retire(size_t iters, int ilp, double freq_GHz) {
+// 执行 ILP 个独立 ADD 指令
+static inline void run_ilp_block(int ilp,
+                                 volatile uint64_t *a1, volatile uint64_t *a2,
+                                 volatile uint64_t *a3, volatile uint64_t *a4,
+                                 volatile uint64_t *a5, volatile uint64_t *a6,
+                                 volatile uint64_t *a7, volatile uint64_t *a8)
+{
+    if (ilp >= 1) *a1 += 1;
+    if (ilp >= 2) *a2 += 1;
+    if (ilp >= 3) *a3 += 1;
+    if (ilp >= 4) *a4 += 1;
+    if (ilp >= 5) *a5 += 1;
+    if (ilp >= 6) *a6 += 1;
+    if (ilp >= 7) *a7 += 1;
+    if (ilp >= 8) *a8 += 1;
+}
+
+static double measure_ilp(int iters, int ilp, double freq_GHz) {
     double samples[REPEAT];
-    const uint64_t t_oh = timer_overhead_ns();  // 计时器开销
+    uint64_t t_oh = timer_overhead_ns();
 
-    for (int r = 0; r < REPEAT; ++r) {
-        warmup_busy_loop(100000);  // 预热 CPU，减少波动
+    for (int r = 0; r < REPEAT; r++) {
+        warmup_busy_loop(30000);
 
-        // 定义 8 个独立累加器，用于控制并行度
-        volatile uint64_t acc1 = 0, acc2 = 0, acc3 = 0, acc4 = 0;
-        volatile uint64_t acc5 = 0, acc6 = 0, acc7 = 0, acc8 = 0;
+        volatile uint64_t a1=0, a2=0, a3=0, a4=0;
+        volatile uint64_t a5=0, a6=0, a7=0, a8=0;
 
         uint64_t t0 = now_ns();
-
-        // 根据并行度依次激活不同数量的累加器
-        for (size_t i = 0; i < iters; ++i) {
-            if (ilp >= 1) { acc1 += 1; acc1 += 1; acc1 += 1; acc1 += 1; acc1 += 1; acc1 += 1; acc1 += 1; acc1 += 1; }
-            if (ilp >= 2) { acc2 += 1; acc2 += 1; acc2 += 1; acc2 += 1; acc2 += 1; acc2 += 1; acc2 += 1; acc2 += 1; }
-            if (ilp >= 3) { acc3 += 1; acc3 += 1; acc3 += 1; acc3 += 1; acc3 += 1; acc3 += 1; acc3 += 1; acc3 += 1; }
-            if (ilp >= 4) { acc4 += 1; acc4 += 1; acc4 += 1; acc4 += 1; acc4 += 1; acc4 += 1; acc4 += 1; acc4 += 1; }
-            if (ilp >= 5) { acc5 += 1; acc5 += 1; acc5 += 1; acc5 += 1; acc5 += 1; acc5 += 1; acc5 += 1; acc5 += 1; }
-            if (ilp >= 6) { acc6 += 1; acc6 += 1; acc6 += 1; acc6 += 1; acc6 += 1; acc6 += 1; acc6 += 1; acc6 += 1; }
-            if (ilp >= 7) { acc7 += 1; acc7 += 1; acc7 += 1; acc7 += 1; acc7 += 1; acc7 += 1; acc7 += 1; acc7 += 1; }
-            if (ilp >= 8) { acc8 += 1; acc8 += 1; acc8 += 1; acc8 += 1; acc8 += 1; acc8 += 1; acc8 += 1; acc8 += 1; }
+        for (int i = 0; i < iters; i++) {
+            // ILP independent ops:
+            // a1+=1; a2+=1; ... (独立不依赖)
+            run_ilp_block(ilp, &a1,&a2,&a3,&a4,&a5,&a6,&a7,&a8);
         }
-
         uint64_t t1 = now_ns();
-        int64_t delta = (int64_t)t1 - (int64_t)t0 - (int64_t)t_oh;
-        if (delta < 0) delta = 0;
 
-        // 总指令数 = 循环次数 × 并行度 × 每个累加器的加法数（8）
-        int total_inst = iters * ilp * 8;
-        double time_ns = (double)delta;
-        double time_cycles = time_ns * freq_GHz;  // 转换为时钟周期
-        double ipc = (double)total_inst / time_cycles;  // 每周期指令数
+        double ns = (double)(t1 - t0 - t_oh);
+        if (ns < 0) ns = 0;
 
-        samples[r] = ipc;
+        double cycles = ns * freq_GHz;
+        double total_inst = (double)iters * ilp;  // 每轮发射 ilp 条指令
+
+        samples[r] = total_inst / cycles;
     }
-
-    // 返回中位数，减少抖动
     return median(samples, REPEAT);
 }
 
 int main(void) {
-    const size_t N = 5 * 1000 * 1000; // 500 万次循环
-    const double freq_GHz = 3.2;      // 假设 CPU 主频为 3.2GHz
+    const int iters = 5 * 1000000;
+    const double freq = 3.2;
 
-    printf("[03] Effective Instruction Throughput Test\n");
-    printf("Iterations: %zu\n\n", N);
+    printf("[03] Effective Instruction Throughput Test (Independent Ops)\n");
+    printf("Iters=%d\n\n", iters);
 
-    printf("ILP\tIPC (Instrs/Cycle)\n");
-    printf("---------------------------\n");
+    printf("ILP\tIPC\n");
+    printf("-----------\n");
 
-    double min_ipc = 1e9, max_ipc = 0.0;
-    double all_ipc[8];
+    double all[8];
+    double min=1e9, max=0;
 
-    // 依次测试 ILP = 1~8 的情况
-    for (int ilp = 1; ilp <= 8; ++ilp) {
-        double ipc = measure_ilp_retire(N, ilp, freq_GHz);
-        all_ipc[ilp - 1] = ipc;
+    for (int ilp = 1; ilp <= 8; ilp++) {
+        double ipc = measure_ilp(iters, ilp, freq);
+        all[ilp-1] = ipc;
 
-        if (ipc < min_ipc) min_ipc = ipc;
-        if (ipc > max_ipc) max_ipc = ipc;
+        if (ipc < min) min = ipc;
+        if (ipc > max) max = ipc;
 
         printf("%d\t%.3f\n", ilp, ipc);
     }
 
-    // 输出最小、最大和中位 IPC
-    printf("\nMin IPC: %.3f\n", min_ipc);
-    printf("Max IPC: %.3f\n", max_ipc);
-    printf("Median IPC: %.3f\n", median(all_ipc, 8));
+    printf("\nMin IPC: %.3f\n", min);
+    printf("Max IPC: %.3f\n", max);
+    printf("Median IPC: %.3f\n", median(all, 8));
 
     return 0;
 }

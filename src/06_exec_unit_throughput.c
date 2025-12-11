@@ -1,66 +1,120 @@
 // 06_integer_bandwidth.c
-// 实验目的：测量 CPU 整数执行单元的最大带宽
-// 方法：通过执行仅包含一种算术操作的循环测量总时间并换算为每周期完成的操作数。
 
 #include <stdio.h>
 #include <stdint.h>
-#include <stdlib.h>
 #include "harness.h"
 
-#define N 10000000     // 每种算术操作的循环次数
-#define FREQ_GHZ 3.2   // 主频（GHz），根据机器实际情况可修改
+#define FREQ_GHZ 3.2         // CPU 主频（GHz）
+#define BLOCKS   1000000     // 外层循环次数
+#define LANES    6           // 一次并行的独立算术运算个数
+#define UNROLL   16          // 每个 block 内展开次数
 
-// 测加法带宽：使用最简单的整型加法作为基准
+#define OPS_PER_BLOCK (LANES * UNROLL)
+
+
+// 路独立 ADD，展开 UNROLL 次
+
 static double run_add_benchmark(void) {
-    volatile int x = 1, y = 2, z = 0;
+    volatile uint64_t a1 = 1,  a2 = 2,  a3 = 3;
+    volatile uint64_t a4 = 4,  a5 = 5,  a6 = 6;
+    volatile uint64_t b1 = 11, b2 = 13, b3 = 17;
+    volatile uint64_t b4 = 19, b5 = 23, b6 = 29;
+
+    uint64_t t_oh = timer_overhead_ns();
 
     uint64_t t0 = now_ns();
-    for (int i = 0; i < N; ++i)
-        z += x + y;   // 加法操作
+    for (int blk = 0; blk < BLOCKS; ++blk) {
+        // 完全独立的 ADD：a1+=b1, a2+=b2, ...
+        for (int u = 0; u < UNROLL; ++u) {
+            a1 += b1; a2 += b2; a3 += b3;
+            a4 += b4; a5 += b5; a6 += b6;
+        }
+    }
     uint64_t t1 = now_ns();
 
-    double duration = (t1 - t0 - timer_overhead_ns()) * FREQ_GHZ; // 换算为时钟周期
-    return N / duration;  // 返回每周期完成的加法操作数（ops/cycle）
+    uint64_t dt = t1 - t0 - t_oh;
+    if ((int64_t)dt < 0) dt = 0;
+
+    double cycles = (double)dt * FREQ_GHZ;
+    double total_ops = (double)BLOCKS * (double)OPS_PER_BLOCK;
+
+    return total_ops / cycles;  // ops / cycle
 }
 
-// 测乘法带宽：乘法通常延迟更高，因此吞吐率会更低
+
+//  路独立 MUL，结构同上
+
 static double run_mul_benchmark(void) {
-    volatile int x = 3, y = 4, z = 0;
+    volatile uint64_t a1 = 3,  a2 = 5,  a3 = 7;
+    volatile uint64_t a4 = 11, a5 = 13, a6 = 17;
+    // 乘数选择为奇数，避免被编译器优化
+    volatile uint64_t m1 = 3,  m2 = 5,  m3 = 7;
+    volatile uint64_t m4 = 9,  m5 = 11, m6 = 13;
+
+    uint64_t t_oh = timer_overhead_ns();
 
     uint64_t t0 = now_ns();
-    for (int i = 0; i < N; ++i)
-        z += x * y;   // 乘法操作
+    for (int blk = 0; blk < BLOCKS; ++blk) {
+        for (int u = 0; u < UNROLL; ++u) {
+            a1 *= m1; a2 *= m2; a3 *= m3;
+            a4 *= m4; a5 *= m5; a6 *= m6;
+        }
+    }
     uint64_t t1 = now_ns();
 
-    double duration = (t1 - t0 - timer_overhead_ns()) * FREQ_GHZ;
-    return N / duration;
+    uint64_t dt = t1 - t0 - t_oh;
+    if ((int64_t)dt < 0) dt = 0;
+
+    double cycles = (double)dt * FREQ_GHZ;
+    double total_ops = (double)BLOCKS * (double)OPS_PER_BLOCK;
+
+    return total_ops / cycles;  // ops / cycle
 }
 
-// 测除法带宽：除法是最慢的整数运算之一，用于体现执行单元瓶颈
+
+// 路独立 DIV，结构同上
+
 static double run_div_benchmark(void) {
-    volatile int x = 10000, y = 3, z = 0;
+    volatile uint64_t a1 = 1000003, a2 = 2000003, a3 = 3000007;
+    volatile uint64_t a4 = 4000007, a5 = 5000011, a6 = 6000011;
+    // 除数取 >1 的常数，避免被编译器优化
+    volatile uint64_t d1 = 3, d2 = 5, d3 = 7;
+    volatile uint64_t d4 = 9, d5 = 11, d6 = 13;
+
+    uint64_t t_oh = timer_overhead_ns();
 
     uint64_t t0 = now_ns();
-    for (int i = 0; i < N; ++i)
-        z += x / y;   // 除法操作
+    for (int blk = 0; blk < BLOCKS; ++blk) {
+        for (int u = 0; u < UNROLL; ++u) {
+            a1 /= d1; a2 /= d2; a3 /= d3;
+            a4 /= d4; a5 /= d5; a6 /= d6;
+        }
+    }
     uint64_t t1 = now_ns();
 
-    double duration = (t1 - t0 - timer_overhead_ns()) * FREQ_GHZ;
-    return N / duration;
+    uint64_t dt = t1 - t0 - t_oh;
+    if ((int64_t)dt < 0) dt = 0;
+
+    double cycles = (double)dt * FREQ_GHZ;
+    double total_ops = (double)BLOCKS * (double)OPS_PER_BLOCK;
+
+    return total_ops / cycles;  // ops / cycle
 }
+
+// main：分别打印三种整数运算的吞吐率
 
 int main(void) {
-    printf("[06] Integer Execution Unit Bandwidth Test\n");
-    printf("Iterations per type: %d\n", N);
+    printf("[06] Integer Execution Unit Bandwidth Test (6-way ILP, unrolled)\n");
+    printf("Blocks per type: %d, UNROLL=%d, LANES=%d (ops/block=%d)\n\n",
+           BLOCKS, UNROLL, LANES, OPS_PER_BLOCK);
 
-    // 分别测量加法、乘法、除法的吞吐率
-    double add_ips = run_add_benchmark();
-    double mul_ips = run_mul_benchmark();
-    double div_ips = run_div_benchmark();
+    double add_ipc = run_add_benchmark();
+    double mul_ipc = run_mul_benchmark();
+    double div_ipc = run_div_benchmark();
 
-    printf("ADD throughput: %.2f ops/cycle\n", add_ips);
-    printf("MUL throughput: %.2f ops/cycle\n", mul_ips);
-    printf("DIV throughput: %.2f ops/cycle\n", div_ips);
+    printf("ADD throughput: %.3f ops/cycle\n", add_ipc);
+    printf("MUL throughput: %.3f ops/cycle\n", mul_ipc);
+    printf("DIV throughput: %.3f ops/cycle\n", div_ipc);
 
     return 0;
 }

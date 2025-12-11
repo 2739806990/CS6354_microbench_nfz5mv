@@ -34,4 +34,19 @@ echo "-----------------------------------"
 ./bin/06_exec_unit_throughput
 echo "-----------------------------------"
 
+./bin/07_cache_latency
+echo "-----------------------------------"
+
+./bin/08_cache_bandwidth
+echo "-----------------------------------"
+
+./bin/09_dram_latency
+echo "-----------------------------------"
+
+./bin/010_dram_bandwidth
+echo "-----------------------------------"
+
+./bin/011_smt_sim
+echo "-----------------------------------"
+
 echo "=== All benchmarks completed successfully ==="
